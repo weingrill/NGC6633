@@ -10,6 +10,7 @@ import config
 import numpy as np
 import logging
 import matplotlib.pyplot as plt
+from astropy.stats import LombScargle
 
 logging.basicConfig(filename=config.projectpath+'analysis.log', 
                     format='%(asctime)s %(levelname)s %(message)s',
@@ -106,6 +107,27 @@ class LightCurve(object):
             a = np.column_stack((periods, thetas))
             np.savetxt(filename, a)
         return periods, thetas
+    
+    def lomb_scargle(self, minfrequency=0.05, maxfrequency=0.8):
+        """
+        calculate the Lomb-Scargle periodogram
+        """
+        import os
+        filename = os.path.join(config.lightcurvespath,'ls',self.starid+'.ls')
+        try:
+            frequencies, power, window = np.genfromtxt(filename, unpack=True)
+        except IOError:
+            t = self.hjd
+            t -= t[0]
+            y1 = np.ones(np.shape(self.mag))
+            
+            frequencies = np.linspace(minfrequency, maxfrequency, 10000)
+            power = LombScargle(self.hjd, self.mag, self.err).power(frequencies)
+            window = LombScargle(self.hjd, y1, center_data=False).power(frequencies)
+            
+            a = np.column_stack((frequencies, power, window))
+            np.savetxt(filename, a)
+        return frequencies, power, window
         
     def clean(self, minperiod, maxperiod):
         from clean import clean  # @UnresolvedImport
@@ -237,29 +259,24 @@ class Analysis(object):
         self.P34_array = gyroperiod(self.bv_array, 600, P0=3.4)
         self.P01_array = gyroperiod(self.bv_array, 600, P0=0.1)
         
-    
     def _p01(self,bv):
         i = np.abs(self.bv_array-bv).argmin()
         return self.P01_array[i]
         
-    
     def _p11(self,bv):
         i = np.abs(self.bv_array-bv).argmin()
         return self.P11_array[i]
         
-    
     def _p34(self,bv):
         i = np.abs(self.bv_array-bv).argmin()
         return self.P34_array[i]
         
-    
     def load_candidates(self, candidatesfile):
         self.candidates = []
         
         self.candidates = np.genfromtxt(candidatesfile,
                                         dtype=('S25', np.float16, np.float16, np.float32, np.float32),
                                          names=True, comments=';')
-        
     
     def save_candidates(self, candidatesfile):
         np.savetxt(candidatesfile, 
@@ -315,8 +332,8 @@ class Analysis(object):
         self.bv = []
         for candidate in self.candidates:
             self.stars.append(candidate['starid'])
-            self.vmag.append(candidate['V'])
-            self.bv.append(candidate['B-V'])
+            self.vmag.append(candidate['vmag'])
+            self.bv.append(candidate['bv'])
         print '... %d stars found' % len(self.candidates)
     
     def setperiod(self, starid, period):
@@ -506,6 +523,7 @@ class Analysis(object):
         amp, rms = 0,0
         try:
             amp, rms = lc.phased(period)
+            snr = np.sqrt(len(self.hjd))*amp/rms
         except IndexError:
             logger.warning('%s: unable to calculate phased function' % starid)
             amp = 'NULL'
@@ -561,9 +579,9 @@ class Analysis(object):
         #self.setamp(starid, amp)
             
         star = {'tab':0, 'bv':bv}
-        return
+        
         plt.subplot(411) ##################################################
-        plt.title('%s (%d) V = %.2f B-V=%.2f' % (starid, star['tab'], vmag, bv))
+        plt.title('%s (%d) V = %.2f B-V=%.2f S/N = %.1f' % (starid, star['tab'], vmag, bv,snr))
         self.plot_lightcurve()
         
         plt.subplot(412) ##################################################
@@ -582,7 +600,10 @@ class Analysis(object):
         plt.close()
 
     def analysis(self):
-        """perform a PDM analysis on each lightcurve"""
+        """
+        perform various pariod and frequency analysis on each star with a 
+        lightcurve
+        """
         from matplotlib import rcParams
         
         print 'Analysis'
