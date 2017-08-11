@@ -108,14 +108,14 @@ class LightCurve(object):
         from pwkit import pdm
         # look at 20 days or at most at the length of dataset
         import os
+        n = np.round(len(self.hjd)+50,-2)
+        #TODO: replace by numpy.geomspace
+        periods = np.linspace(minperiod,maxperiod, n)
         filename = os.path.join(config.lightcurvespath,'pdm',self.starid+'.pdm')
         try:
             result = pickle.load(open(filename,'r'))
         except IOError:
             # estimate the number of periods to be tested
-            n = np.round(len(self.hjd)+50,-2)
-            #TODO: replace by numpy.geomspace
-            periods = np.linspace(1.0,21.0, n)
             result = pdm.pdm(self.hjd, self.mag, self.err, periods, 3)
             
             pickle.dump(result, open(filename,'w')) 
@@ -147,12 +147,21 @@ class LightCurve(object):
         best_frequency = frequencies[np.argmax(power)]
         period = 1./ best_frequency
         
-        periods = 1.0 / frequencies    
+        periods = 1.0 / frequencies
+        periods = periods[::-1]
+        assert(periods[0] < periods[-1])
+        power = power[::-1] 
+           
         i = np.argmax(power)
         i1 = fx.largmin(power, i)
         i2 = fx.largmin(power, i,'right')
+        sigma0 = np.abs((periods[i2]-periods[i1])/2)
+        try:
+            _, _, ls_sigma = fx.gauss_fit(periods[i1:i2], power[i1:i2],  power[i], period, sigma0)
+        except RuntimeError:
+            logger.warn('could not determine sigma in lomb_scargle')
+            ls_sigma = sigma0
         
-        _, _, ls_sigma = fx.gauss_fit(periods[i1:i2], power[i1:i2],  power[i], period, 1.0)    
         self.ls_period, self.ls_error, self.ls_power = period, ls_sigma, np.max(power)      
         return frequencies, power
         
