@@ -5,248 +5,32 @@ Created on May 15, 2017
 
 @author: Joerg Weingrill <jweingrill@aip.de>
 '''
-
 import config
 import numpy as np
 import logging
 import matplotlib.pyplot as plt
-from astropy.stats import LombScargle
+from lightcurve import LightCurve
 
 logging.basicConfig(filename=config.projectpath+'analysis.log', 
                     format='%(asctime)s %(levelname)s %(message)s',
                     level=logging.INFO)
 logger = logging.getLogger('NGC6633 analysis')
 
-class LightCurve(object):
-    """
-    Lightcurve object for NGC6633
-    fetch lightcurve from file.
-    ability to store lightcurve to file
-    """
-    def __init__(self, starid):
-        self.starid = starid
-        self.fromfile()
-
-    def fromfile(self, filename=None):
-        """
-        loads the lightcurve from a file.
-        if the filename is not given it is assembled from the starid
-        """
-        
-        if filename is None:
-            filename = config.lightcurvespath+self.starid+'.dat'
-        logger.info('load file %s' % filename)
-        self.hjd, self.mag, self.err = np.loadtxt(filename, unpack = True)
-        
-        logger.info('%d datapoints' % len(self.hjd))
-        
-        return (self.hjd, self.mag, self.err)
-    
-    def normalize(self):
-        try:
-            self.hjd -= np.min(self.hjd)
-            self.mag -= np.mean(self.mag)
-        except ValueError:
-            return
-    
-    def detrend(self):
-        try:
-            par = np.polyfit(self.hjd, self.mag, 1)
-            self.mag -= np.polyval(par, self.hjd)
-        except TypeError:
-            return
-
-    def sigma_clip(self, sigmas=2.0):
-        from functions import sigma_clip
-        self.hjd, self.mag, self.err = sigma_clip(self.hjd, self.mag, self.err, sigmas=sigmas)
-    
-    def clip(self, limit = 0.05):
-        """
-        clip lightcurve at given limit
-        """
-        m = np.mean(self.mag)
-        valid = abs(self.mag-m)<limit
-        self.hjd = np.compress(valid, self.hjd)
-        self.mag = np.compress(valid, self.mag)
-        self.err = np.compress(valid, self.err)
-        
-    def __len__(self):
-        return len(self.hjd)
-    
-    def psd(self, minperiod, maxperiod):
-        from psd import ppsd
-        # perform a power spectrum analysis
-        tpsa, mpsa = self.hjd, self.mag
-        n = len(tpsa)
-        # zero padded lightcurves
-        t_padded = np.zeros(4*n)
-        t_padded[:n] = tpsa
-        t_padded[n:] = np.linspace(max(tpsa),4*max(tpsa),3*n)
-        m_padded = np.zeros(4*n)
-        m_padded[:n] = mpsa
-        
-        px, f = ppsd(t_padded, 
-                     m_padded, 
-                     lower=1./maxperiod, 
-                     upper=1./minperiod,
-                     num= 2000)
-        px = np.sqrt(px)
-        period = 1./f[np.argmax(px)]
-        return period
-    
-    def pdm(self, minperiod, maxperiod):
-        from pdm import pdm
-        # look at 20 days or at most at the length of dataset
-        import os
-        filename = os.path.join(config.lightcurvespath,'pdm',self.starid+'.pdm')
-        try:
-            
-            periods, thetas = np.genfromtxt(filename, unpack=True)
-        except IOError:
-            periods, thetas = pdm(self.hjd, self.mag, minperiod, maxperiod, 0.5/24)
-            a = np.column_stack((periods, thetas))
-            np.savetxt(filename, a)
-        return periods, thetas
-    
-    def lomb_scargle(self, minfrequency=0.05, maxfrequency=0.8):
-        """
-        calculate the Lomb-Scargle periodogram
-        """
-        import os
-        filename = os.path.join(config.lightcurvespath,'ls',self.starid+'.ls')
-        try:
-            frequencies, power, window = np.genfromtxt(filename, unpack=True)
-        except IOError:
-            t = self.hjd
-            t -= t[0]
-            y1 = np.ones(np.shape(self.mag))
-            
-            frequencies = np.linspace(minfrequency, maxfrequency, 10000)
-            power = LombScargle(self.hjd, self.mag, self.err).power(frequencies)
-            window = LombScargle(self.hjd, y1, center_data=False).power(frequencies)
-            
-            a = np.column_stack((frequencies, power, window))
-            np.savetxt(filename, a)
-        return frequencies, power, window
-        
-    def clean(self, minperiod, maxperiod):
-        from clean import clean  # @UnresolvedImport
-        import os
-        filename = os.path.join(config.lightcurvespath,'clean',self.starid+'.clean')
-        try:
-            p, cf = np.genfromtxt(filename, unpack=True)
-        except IOError:
-            t = self.hjd
-            x = self.mag
-            f, cleaned, _ = clean(t, x, threshold=1e-3)
-            n2 = len(f) /2
-            cf = cleaned[n2+1:]/(2.0*np.var(x))
-            p = 1./f[n2+1:]
-            cf = cf[(p>=minperiod) & (p<maxperiod)]
-            p = p[(p>=minperiod) & (p<maxperiod)]
-            #i = np.argmax(cf)
-            #period = p[i]
-            a = np.column_stack((p, cf))
-            np.savetxt(filename, a)
-        except ValueError:
-            t = self.hjd
-            x = self.mag
-            f, cleaned, _ = clean(t, x, threshold=1e-3)
-            n2 = len(f) /2
-            cf = cleaned[n2+1:]/(2.0*np.var(x))
-            p = 1./f[n2+1:]
-            cf = cf[(p>=minperiod) & (p<maxperiod)]
-            p = p[(p>=minperiod) & (p<maxperiod)]
-            #i = np.argmax(cf)
-            #period = p[i]
-            a = np.column_stack((p, cf))
-            np.savetxt(filename, a)
-        return p, cf
-            
-    def phased(self, period):
-        from functions import phase
-        tp, yp = phase(self.hjd, self.mag, period)
-
-            
-        s1 = np.sin(2*np.pi*tp/period)
-        c1 = np.cos(2*np.pi*tp/period)
-        s2 = np.sin(4*np.pi*tp/period)
-        c2 = np.cos(4*np.pi*tp/period)
-        
-        A = np.column_stack((np.ones(tp.size), s1, c1, s2, c2))
-        c, resid,_,_ = np.linalg.lstsq(A,yp)
-        amp_err = resid[0]
-
-        amp = max(c[1]*s1+c[2]*c1+c[3]*s2+c[4]*c2)-\
-              min(c[1]*s1+c[2]*c1+c[3]*s2+c[4]*c2)
-
-        tp1 = np.linspace(0.0, period, 100)
-        s1 = np.sin(2*np.pi*tp1/period)
-        c1 = np.cos(2*np.pi*tp1/period)
-        s2 = np.sin(4*np.pi*tp1/period)
-        c2 = np.cos(4*np.pi*tp1/period)
-        return amp, amp_err
-
-    def rebin(self, interval = 0.5, method='mean'):
-        """
-        rebin to new interval using the mean of each bin
-        interval determines the length of each bin
-        medianbins calculates the median in each bin otherwise the mean is taken
-        """
-        
-        
-        if method not in ['mean','median','weighted']:
-            raise ValueError
-        
-        data = self.hjd
-        # ...+interval so that the last bin includes the last epoch
-        bins = np.arange(self.hjd[0]-0.5*interval, self.hjd[-1]+0.5*interval, interval)
-        nbins = len(bins)-1
-        t = np.zeros(nbins)
-        f = np.zeros(nbins)
-        f_mean = np.zeros(nbins)
-        f_median = np.zeros(nbins)
-        f_weight = np.zeros(nbins)
-        e = np.zeros(nbins)
-        # adopted from Ian's Astro-Python Code v0.3
-        # http://www.mpia-hd.mpg.de/homes/ianc/python/_modules/tools.html
-        # def errxy()
-        idx = [[data.searchsorted(bins[i]), \
-                data.searchsorted(bins[i+1])] for i in range(nbins)]
-        np.seterr(invalid='ignore')
-        for i in range(nbins):
-            f_mean[i] = np.mean(self.mag[idx[i][0]:idx[i][1]])
-            #f_median[i] = np.median(self.mag[idx[i][0]:idx[i][1]])
-            #f_weight[i] = np.average(self.mag[idx[i][0]:idx[i][1]], weights=1./self.err[idx[i][0]:idx[i][1]])
-            t[i] = np.mean(self.hjd[idx[i][0]:idx[i][1]])
-            e[i] = np.std(self.hjd[idx[i][0]:idx[i][1]])
-
-        
-        if method=='mean':
-            f = f_mean
-        elif method=='median':
-            f = f_median
-        elif method=='weighted':
-            f = f_weight
-        
-                    
-        np.seterr(invalid='warn')
-        valid = ~np.isnan(t)
-        self.mag = np.compress(valid,f)
-        self.hjd = np.compress(valid,t)
-        self.err = np.compress(valid,e)
-
 class Analysis(object):
     '''
     Analysis class for NGC 6633
     '''
-
-
-    def __init__(self):
+    def __init__(self, minperiod = 1.25, maxperiod = 20):
         '''
         Constructor
         '''
         from datasource import DataSource
+        
+        self.minperiod = minperiod
+        self.maxperiod = maxperiod
+        self.sigma_limit = 3.0
+        self.theta_limit = 0.98
+        
         self.wifsip = DataSource(database=config.dbname, user=config.dbuser, host=config.dbhost)
         self._gyroperiods()
         
@@ -277,6 +61,7 @@ class Analysis(object):
         self.candidates = np.genfromtxt(candidatesfile,
                                         dtype=('S25', np.float16, np.float16, np.float32, np.float32),
                                          names=True, comments=';')
+        self.candidates = self.candidates[:4] 
     
     def save_candidates(self, candidatesfile):
         np.savetxt(candidatesfile, 
@@ -396,6 +181,9 @@ class Analysis(object):
         plt.axhline(5.*np.mean(amplitudes), color='g', ls='--')
         plt.xlim(1.0, 15.0)
         plt.minorticks_on()
+        
+    def plot_lombscargle(self, periods, powers):
+        plt.plot(periods, powers, 'k:')
     
     def plot_pdm(self, periods, thetas, bv):
         from scipy import signal
@@ -447,7 +235,9 @@ class Analysis(object):
         plt.ylim(max(yp-np.mean(yp)),min(yp-np.mean(yp)))
         plt.xlabel('P = %.4f' % period)
 
-    def _analyzestar(self, starid, vmag, bv, minperiod = 1.0, maxperiod = 20):
+    def _analyzestar(self, starid, vmag, bv):
+        from scipy import interpolate
+        
         print '%-24s '% starid,
         try:
             lc = LightCurve(starid)
@@ -462,65 +252,51 @@ class Analysis(object):
             logger.warn("%s: not enough datapoints" % starid)
             print 'not enough datapoints'
             return                    
-        lc.rebin(0.1)
-        lc.normalize()
+        #lc.rebin(0.1)
+        #lc.normalize()
         #lc.clip(0.1)
-        lc.detrend()
-        lc.sigma_clip()
-        lc.detrend()
-        lc.normalize()
+        #lc.detrend()
+        #lc.sigma_clip()
+        #lc.detrend()
+        #lc.normalize()
         
         self.hjd = lc.hjd
         self.mag = lc.mag
         self.err = lc.err
         
-        clean_periods, clean_amplitudes = lc.clean(minperiod, maxperiod)
-        pdm_periods, pdm_thetas = lc.pdm(minperiod, maxperiod)
+        clean_periods, clean_amplitudes = lc.clean(self.minperiod, self.maxperiod, gain=0.1)
+        ls_frequencies, ls_powers = lc.lomb_scargle(minfrequency=1./self.maxperiod, maxfrequency=1./self.minperiod)
+        pdm_periods, pdm_thetas = lc.pdm(self.minperiod, self.maxperiod)
        
-        #period = clean_periods[np.argmax(clean_amplitudes)]
-
-        from scipy import interpolate
+        ls_periods = 1./ls_frequencies[ls_frequencies>0][::-1]
+        ls_powers = ls_powers[ls_frequencies>0][::-1]
         
-        i = np.argsort(clean_periods)
-        c_periods = clean_periods[i]
-        c_amps = clean_amplitudes[i]
-        c_periods = np.insert(c_periods, 0 , 0.0)
-        c_amps = np.insert(c_amps, 0 , 0.0)
-        c_periods = np.insert(c_periods, -1 , maxperiod)
-        c_amps = np.insert(c_amps, -1 , 0.0)
-        c_int = interpolate.interp1d(c_periods, c_amps)
+        #base_periods = np.arange(self.minperiod, self.maxperiod, 0.01)
+        #clean_interpolate = interpolate.interp1d(clean_periods, clean_amplitudes**2)
+        #ls_interpolate = interpolate.interp1d(ls_periods, ls_powers)
+        #pdm_interpolate = interpolate.interp1d(pdm_periods, 1.0 - pdm_thetas)
         
         # use interpolation function returned by `interp1d`
-        sum_amp = c_int(pdm_periods)*(1.-pdm_thetas)  
-        sum_amp /= max(sum_amp) 
-        i = np.argmax(sum_amp)
-        period = pdm_periods[i] 
-        theta = pdm_thetas[i]
+        #sum_amp = clean_interpolate(base_periods)*ls_interpolate(base_periods)*pdm_interpolate(base_periods) 
+          
+        #sum_amp /= np.max(sum_amp) 
+        #i = np.argmax(sum_amp)
         
-        import functions as fx
-        
-        
-        ci = np.argmax(c_amps)
-       
-        
+        def issimilar(value1, error1, value2, error2):
+            if error1<0.0 or error2<0.0:
+                raise(ValueError,"error values must be positive")
+            if np.abs(value1 - value2) < error1 + error2:
+                return True
+            else:
+                return False
             
-        try:
-            j = np.where((pdm_periods>period-2) & (pdm_periods<period+2))
-            _, _, pgf_sigma = fx.gauss_fit(pdm_periods[j], 1.-pdm_thetas[j],  1.0-theta, period, 1.0)      
-        except RuntimeError:
-            logger.warning('%s: unable to fit pgf gaussian'  % starid)
-            pgf_sigma = 'NULL'
-        cgf_sigma = 0.0    
-        try:
-            j = np.where((c_periods>c_periods[ci]-2) & (c_periods<c_periods[ci]+2))
-            _, _, cgf_sigma = fx.gauss_fit(c_periods[j], c_amps[j],  c_amps[ci], c_periods[ci], 1.0)
-        except RuntimeError:
-            logger.warning('%s: RuntimeError, unable to fit cgf gaussian' % starid)
-        except TypeError:
-            logger.warning('%s: TypeError, unable to fit cgf gaussian' % starid)
-            cgf_sigma= 'NULL'
+            
+        period = lc.pdm_period
+        period_err = lc.pdm_error
+            
         
         amp, rms = 0,0
+        # try to determine the rms of the residual lightcurve
         try:
             amp, rms = lc.phased(period)
             snr = np.sqrt(len(self.hjd))*amp/rms
@@ -529,22 +305,24 @@ class Analysis(object):
             amp = 'NULL'
             rms = 'NULL'
         
-        sigma_limit = 3.0
-        theta_limit = 0.875
+        
+        
+        # try to store the results
         try:
-            ci = np.argmax(c_amps)
-            
-            
-            params = {'period': period,
-                      'period_err': pgf_sigma,
-                      'clean_period': c_periods[ci],
-                      'clean_amp': c_amps[ci],
-                      'clean_sigma': cgf_sigma,
-                      'theta': theta,
-                      'freq': period,
-                      'amp': amp,
-                      'rms': rms,
-                      'ni': len(self.hjd)
+            params = {'pdm_period':     lc.pdm_period,
+                      'pdm_error':      lc.pdm_error,
+                      'pdm_theta':      lc.pdm_theta,
+                      'clean_period':   lc.clean_period,
+                      'clean_amp':      lc.clean_amplitude,
+                      'clean_sigma':    lc.clean_error,
+                      'ls_period':      lc.ls_period, 
+                      'ls_error':       lc.ls_error, 
+                      'ls_power':       lc.ls_power, 
+                      'period':         period,
+                      'period_err':     period_err,
+                      'amp':            amp,
+                      'rms':            rms,
+                      'ni':             len(self.hjd)
                       }
             
             keys = ', '.join(params.keys())
@@ -558,17 +336,26 @@ class Analysis(object):
             logger.error("Cannot store params for starid %s: %s" % (starid, query))
         
         try:    
-            mamp = np.mean(clean_amplitudes)
+            mean_amp = np.mean(clean_amplitudes)
         except ValueError:
             print 'No Clean amplitudes for starid %s' % starid
             logger.error("No Clean amplitudes for starid %s" % starid)
             return
+        
+        clean_sigmas = lc.clean_amplitude/mean_amp
+        
         try:
-            if max(clean_amplitudes)> sigma_limit*mamp and pdm_thetas[i] < theta_limit:
-                print "%.2f %.1f %.2f" % (period,   max(clean_amplitudes)/mamp, cgf_sigma)
+            if clean_sigmas > self.sigma_limit and lc.pdm_theta < self.theta_limit:
+                print "clean: %.2f+-%.2f\tls: %.2f+-%.2f\tpdm: %.3f+-%.3f" % (lc.clean_period, 
+                                                                     lc.clean_error, 
+                                                                     lc.ls_period,
+                                                                     lc.ls_error,
+                                                                     lc.pdm_period,
+                                                                     lc.pdm_error,
+                                                                     )
                 self.setperiod(starid, period)
             else:
-                print '< %.1f sigmas or  theta %.2f > %.2f' % (sigma_limit, pdm_thetas[i], theta_limit)
+                print '%.1f < %.1f sigmas or theta %.2f > %.2f' % (clean_sigmas, self.sigma_limit, lc.pdm_theta, self.theta_limit)
                 self.setperiod(starid, np.nan)
                 return
         except ValueError:
@@ -576,8 +363,7 @@ class Analysis(object):
             logger.error("No maximum clean amplitude for starid %s" % starid)
             return           
             
-        #self.setamp(starid, amp)
-            
+        #make the plots    
         star = {'tab':0, 'bv':bv}
         
         plt.subplot(411) ##################################################
@@ -586,10 +372,10 @@ class Analysis(object):
         
         plt.subplot(412) ##################################################
         self.plot_clean(clean_periods, clean_amplitudes, bv)
-        
+        self.plot_lombscargle(ls_frequencies, ls_powers)
 
         plt.subplot(413) ##################################################
-        plt.plot(pdm_periods, sum_amp,'g')
+        #plt.plot(pdm_periods, sum_amp,'g')
         plt.axvline(period, color='b')
         self.plot_pdm(pdm_periods, pdm_thetas, bv)
         
@@ -628,7 +414,7 @@ class Analysis(object):
         rcParams.update(params)
         
         for starid,vmag,bv in zip(self.stars, self.vmag, self.bv):
-            self._analyzestar(starid, vmag, bv, minperiod = 1.3, maxperiod = 15)
+            self._analyzestar(starid, vmag, bv)
 
 if __name__ == '__main__':
     
@@ -641,7 +427,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     if args.make:
-        analysis = Analysis()
+        analysis = Analysis(minperiod = 1.25, maxperiod = 20)
         analysis.load_candidates(config.datapath+'candidates.txt')
         analysis.make_lightcurves()
         analysis.save_candidates(config.datapath+'candidates_good.txt')
