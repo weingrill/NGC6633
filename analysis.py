@@ -29,7 +29,7 @@ class Analysis(object):
         self.minperiod = minperiod
         self.maxperiod = maxperiod
         self.sigma_limit = 3.0
-        self.theta_limit = 0.98
+        self.theta_limit = 0.90
         
         self.wifsip = DataSource(database=config.dbname, user=config.dbuser, host=config.dbhost)
         self._gyroperiods()
@@ -61,8 +61,7 @@ class Analysis(object):
         self.candidates = np.genfromtxt(candidatesfile,
                                         dtype=('S25', np.float16, np.float16, np.float32, np.float32),
                                          names=True, comments=';')
-        self.candidates = self.candidates[:4] 
-    
+        
     def save_candidates(self, candidatesfile):
         np.savetxt(candidatesfile, 
                    self.good_candidates, 
@@ -162,54 +161,59 @@ class Analysis(object):
         plot the lightcurve for a given star
         """
         mean = np.mean(self.mag)
-        plt.hlines(mean,min(self.hjd),max(self.hjd),linestyle='--')
-        plt.xlim(min(self.hjd),max(self.hjd))
+        t = self.hjd - min(self.hjd)
+        plt.axhline(mean,linestyle='--')
+        plt.xlim(min(t),max(t))
+        plt.ylabel('mag')
         plt.grid()
-        plt.errorbar(self.hjd, self.mag, yerr=self.err*0.5, fmt='o')
+        plt.errorbar(t, self.mag, yerr=self.err, fmt='.k',
+                     capsize=None, capthick=0.0, elinewidth=0.0)
         ylim=plt.ylim()
         plt.ylim(ylim[1],ylim[0])
 
-    def plot_clean(self, periods, amplitudes, bv):
-        plt.plot(periods, amplitudes, 'k')
+    def plot_clean(self, periods, amplitudes, bv, clean_period, clean_error):
+        mean_amps = np.mean(amplitudes)
+        # we plot normalized by sigmas
+        plt.plot(periods, amplitudes/mean_amps, 'k')
         
         plt.axvspan(self._p01(bv), self._p34(bv), alpha=0.2)
         plt.axvline(self._p11(bv), ls='-.')
-        i = np.argmax(amplitudes)
-        period = periods[i]
-        plt.axvline(x = period, color='red', alpha=0.5)
-        plt.axhline(np.mean(amplitudes), color='b', ls='--')
-        plt.axhline(5.*np.mean(amplitudes), color='g', ls='--')
-        plt.xlim(1.0, 15.0)
+        
+        plt.axvline(x = clean_period, color='red', alpha=0.5)
+        plt.axvline(x = clean_period+clean_error, color='red', alpha=0.5, ls=':')
+        plt.axvline(x = clean_period-clean_error, color='red', alpha=0.5, ls=':')
+        
+        plt.axhline(self.sigma_limit, color='k', ls='--')
+        plt.xlim(self.minperiod, self.maxperiod)
+        plt.ylabel('$\sigma$')
         plt.minorticks_on()
         
-    def plot_lombscargle(self, periods, powers):
-        plt.plot(periods, powers, 'k:')
+    def plot_lombscargle(self, periods, powers, ls_period, ls_error):
+        mean_pwrs = np.mean(powers)
+        plt.plot(periods, powers/mean_pwrs, 'grey')
+        plt.axvline(x = ls_period, color='blue', alpha=0.5)
+        plt.axvline(x = ls_period+ls_error, color='blue', alpha=0.5, ls=':')
+        plt.axvline(x = ls_period-ls_error, color='blue', alpha=0.5, ls=':')
     
-    def plot_pdm(self, periods, thetas, bv):
-        from scipy import signal
-        
-        kernel = signal.gaussian(101, 2)
-        n = len(thetas)/2
-        padded_thetas = np.lib.pad(thetas, n, mode='constant', constant_values=(1.0,1.0))
-        smoothed = signal.fftconvolve(padded_thetas, kernel, mode='same')[n:-n]/5
-        plt.plot(periods, smoothed, 'k')
-        i = np.argmin(smoothed)
-        period = periods[i]
+    def plot_pdm(self, periods, thetas, bv, pdm_period, pdm_error):
+        plt.plot(periods, thetas, 'k')
         
         plt.axvspan(self._p01(bv), self._p34(bv), alpha=0.2)
         plt.axvline(self._p11(bv), ls='-.')
         
+        plt.axhline(self.theta_limit, color='k', ls='--')
         
-        plt.axvline(x = period, color='red', alpha=0.5)
-        plt.axhline(0.8, color='b', ls='--')
+        plt.axvline(x = pdm_period, color='green', alpha=0.5)
         
-        plt.xlim(1.0, 15.0)
-        plt.ylim(0.0,1.0)
+        plt.xlim(self.minperiod, self.maxperiod)
+        plt.ylabel('$\Theta$')
+        
+        plt.ylim(min(thetas),1.0)
         plt.minorticks_on()
         
     def plot_phase(self, period):    
         from functions import phase
-        tp, yp = phase(self.hjd, self.mag, period)
+        tp, yp = phase(self.hjd-np.min(self.hjd), self.mag-np.mean(self.mag), period)
 
             
         s1 = np.sin(2*np.pi*tp/period)
@@ -234,10 +238,10 @@ class Analysis(object):
         plt.xlim(0.0, 2*period)
         plt.ylim(max(yp-np.mean(yp)),min(yp-np.mean(yp)))
         plt.xlabel('P = %.4f' % period)
+        plt.ylabel('mag')
 
     def _analyzestar(self, starid, vmag, bv):
-        from scipy import interpolate
-        
+        logger.info('%-24s: Vmag=%.2f B-V=%.2f' % (starid, vmag, bv))
         print '%-24s '% starid,
         try:
             lc = LightCurve(starid)
@@ -351,7 +355,7 @@ class Analysis(object):
                                                                      lc.ls_period,
                                                                      lc.ls_error,
                                                                      lc.pdm_period,
-                                                                     lc.pdm_error,
+                                                                     lc.pdm_error
                                                                      )
                 self.setperiod(starid, period)
             else:
@@ -371,13 +375,15 @@ class Analysis(object):
         self.plot_lightcurve()
         
         plt.subplot(412) ##################################################
-        self.plot_clean(clean_periods, clean_amplitudes, bv)
-        self.plot_lombscargle(ls_frequencies, ls_powers)
+        self.plot_clean(clean_periods, clean_amplitudes, bv, 
+                        lc.clean_period, lc.clean_error)
+        self.plot_lombscargle(ls_periods, ls_powers,
+                              lc.ls_period, lc.ls_error)
 
         plt.subplot(413) ##################################################
-        #plt.plot(pdm_periods, sum_amp,'g')
         plt.axvline(period, color='b')
-        self.plot_pdm(pdm_periods, pdm_thetas, bv)
+        self.plot_pdm(pdm_periods, pdm_thetas, bv,
+                      lc.pdm_period,lc.pdm_error)
         
         plt.subplot(414) ##################################################
         self.plot_phase(period)
