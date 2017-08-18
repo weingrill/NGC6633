@@ -25,13 +25,13 @@ class LightCurve(object):
     """
     def __init__(self, starid):
         self.starid = starid
-        self.fromfile()
+        self.loadfromfile()
         
         self.pdm_period = np.NAN
         self.pdm_error = np.NAN
         self.pdm_theta = np.NAN
 
-    def fromfile(self, filename=None):
+    def loadfromfile(self, filename=None):
         """
         loads the lightcurve from a file.
         if the filename is not given it is assembled from the starid
@@ -40,11 +40,41 @@ class LightCurve(object):
         if filename is None:
             filename = config.lightcurvespath+self.starid+'.dat'
         logger.info('load file %s' % filename)
-        self.hjd, self.mag, self.err = np.loadtxt(filename, unpack = True)
-        
+        try:
+            self.hjd, self.mag, self.err = np.loadtxt(filename, unpack = True)
+        except IOError:
+            self.savetofile()
+            self.hjd, self.mag, self.err = np.loadtxt(filename, unpack = True)
+            
         logger.info('%d datapoints' % len(self.hjd))
         
         return (self.hjd, self.mag, self.err)
+
+    def savetofile(self, filename=None):
+        from datasource import DataSource
+        wifsip = DataSource(database=config.dbname, user=config.dbuser, host=config.dbhost)
+        # if file exists, we dont need to make he effort
+        if filename is None:
+            filename = config.lightcurvespath+self.starid+'.dat'
+        
+        # get the coordinates
+        query = "SELECT ra, dec FROM ngc6633 WHERE starid = '%s'" % self.starid
+        coordinates = dict(zip(('ra','dec'),wifsip.query(query)[0]))
+        print coordinates
+        # apply mid-exposure correction
+        query = "SELECT hjd+(expt/43200.), mag_isocor-corr, magerr_isocor" + \
+                " FROM frames, phot" + \
+                " WHERE frames.object LIKE 'NGC 6633 rot%%'" + \
+                " AND phot.objid=frames.objid " + \
+                " AND circle(point(%(ra)f,%(dec)f),0.5/3600.0)@>circle(phot.coord,0)" % coordinates + \
+                " AND filter='V' AND flags < 4" + \
+                " AND magerr_isocor < 0.02" + \
+                " AND mag_isocor+corr>0.0" + \
+                " ORDER BY frames.objid"
+        result = wifsip.query(query)
+        
+        if len(result)>=50: 
+            np.savetxt(filename, result, fmt='%.5f %.4f %.4f', header = 'hjd mag magerr') 
     
     def normalize(self):
         try:
@@ -60,8 +90,11 @@ class LightCurve(object):
         except TypeError:
             return
 
-    def sigma_clip(self, sigmas=2.0):
+    def sigma_clip(self, sigmas):
         from functions import sigma_clip
+        """
+        performs sigma clipping on the lightcurve
+        """
         self.hjd, self.mag, self.err = sigma_clip(self.hjd, self.mag, self.err, sigmas=sigmas)
     
     def clip(self, limit = 0.05):
@@ -106,11 +139,8 @@ class LightCurve(object):
         see also: http://www.hs.uni-hamburg.de/DE/Ins/Per/Czesla/PyA/PyA/pyTimingDoc/pyPDMDoc/pdm.html
         """
         from pwkit import pdm
-        # look at 20 days or at most at the length of dataset
         import os
-        n = np.round(len(self.hjd)+50,-2)
-        #TODO: replace by numpy.geomspace
-        periods = np.linspace(minperiod,maxperiod, n)
+        periods = np.geomspace(minperiod,maxperiod, 200)
         filename = os.path.join(config.lightcurvespath,'pdm',self.starid+'.pdm')
         try:
             result = pickle.load(open(filename,'r'))
@@ -151,6 +181,7 @@ class LightCurve(object):
         periods = periods[::-1]
         assert(periods[0] < periods[-1])
         power = power[::-1] 
+        window = window[::-1]
            
         i = np.argmax(power)
         i1 = fx.largmin(power, i)
@@ -162,8 +193,10 @@ class LightCurve(object):
             logger.warn('could not determine sigma in lomb_scargle')
             ls_sigma = sigma0
         
-        self.ls_period, self.ls_error, self.ls_power = period, ls_sigma, np.max(power)      
-        return frequencies, power
+        self.ls_period = period
+        self.ls_error = ls_sigma
+        self.ls_power = np.max(power)      
+        return periods, power, window
         
     def clean(self,minperiod=1.0, maxperiod=20.0, gain=0.1):
         """
@@ -178,24 +211,29 @@ class LightCurve(object):
         t = self.hjd
         x = self.mag
         try:
-            p, a = np.genfromtxt(filename, unpack=True)
-        except IOError:
-            f, a, _ = clean(t, x, gain=gain, threshold=1e-3)
-            p = 1.0/f[f>0]
-            a = a[f>0]
-            
-            save_array = np.column_stack((p, a))
+            periods, amplitudes, residuals = np.genfromtxt(filename, unpack=True)
+        except (IOError, ValueError) as e:
+            frequencies, amplitudes, residuals = clean(t, x, gain=gain, threshold=1e-5)
+            periods = 1.0/frequencies[frequencies > 0]
+            amplitudes = amplitudes[frequencies > 0]
+            residuals = residuals[frequencies > 0]
+            save_array = np.column_stack((periods, amplitudes, residuals))
             np.savetxt(filename, save_array)
+            
         # sort the periods and amplitudes, because, they are in reversed order
-        periods = p[::-1]
+        periods = periods[::-1]
+        # periods assumed to be sorted
         assert(periods[0]<periods[-1])
-        amplitudes = a[::-1]
+        amplitudes = amplitudes[::-1]
+        # select the periods we are looking for
         j = np.where((periods>=minperiod) & (periods<maxperiod))
         periods = periods[j]
         amplitudes = amplitudes[j]
+        residuals = residuals[j]
         
         i = np.argmax(amplitudes)
         period = periods[i]
+        
         i1 = fx.largmin(amplitudes, i)
         i2 = fx.largmin(amplitudes, i,'right')
         sigma0 = np.abs(periods[i1]-periods[i2])/2.0
@@ -205,7 +243,7 @@ class LightCurve(object):
             logger.warn('cannot determine sigma by Gauss fit in CLEAN')
             sigma = sigma0
         self.clean_period, self.clean_error, self.clean_amplitude = period, sigma, np.max(amplitudes)        
-        return periods, amplitudes
+        return periods, amplitudes, residuals
             
     def phased(self, period):
         from functions import phase
