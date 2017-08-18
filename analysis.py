@@ -15,6 +15,7 @@ logging.basicConfig(filename=config.projectpath+'analysis.log',
                     format='%(asctime)s %(levelname)s %(message)s',
                     level=logging.INFO)
 logger = logging.getLogger('NGC6633 analysis')
+logging.captureWarnings(True)
 
 class Analysis(object):
     '''
@@ -28,8 +29,8 @@ class Analysis(object):
         
         self.minperiod = minperiod
         self.maxperiod = maxperiod
-        self.sigma_limit = 3.0
-        self.theta_limit = 0.90
+        self.sigma_limit = 3.5
+        self.theta_limit = 0.97
         
         self.wifsip = DataSource(database=config.dbname, user=config.dbuser, host=config.dbhost)
         self._gyroperiods()
@@ -69,41 +70,6 @@ class Analysis(object):
                    header='starid bv vmag ra dec', 
                    comments=';')
         
-    def make_lightcurves(self):
-        from estimator import Estimator
-        import os
-        
-        e = Estimator(0,len(self.candidates))
-        good_candidates = []
-        for k,candidate in enumerate(self.candidates):
-            starid = candidate['starid']
-            # if file exists, we dont need to make he effort
-            if os.path.isfile(config.lightcurvespath+'%s.dat' % starid):
-                good_candidates.append(tuple(candidate))
-                continue
-            
-            # apply mid-exposure correction
-            query = "SELECT hjd+(expt/43200.), mag_isocor-corr, magerr_isocor" + \
-                    " FROM frames, phot" + \
-                    " WHERE frames.object LIKE 'NGC 6633 rot%%'" + \
-                    " AND phot.objid=frames.objid " + \
-                    " AND circle(point(%(ra)f,%(dec)f),0.6/3600.0)@>circle(phot.coord,0)" %candidate + \
-                    " AND filter='V' AND flags < 4" + \
-                    " AND magerr_isocor < 0.01" + \
-                    " AND mag_isocor+corr>0.0" + \
-                    " ORDER BY frames.objid"
-            result = self.wifsip.query(query)
-            
-            if len(result)>=50: 
-                np.savetxt(config.lightcurvespath+'%s.dat' % starid, 
-                           result, fmt='%.5f %.4f %.4f', header = 'hjd mag magerr') 
-                #candidate['num'] = len(result)
-                good_candidates.append(tuple(candidate))  
-                
-            e.estimate(k, comment='%-25s %d' % (starid, len(result)))
-        columns = ['starid', 'bv', 'vmag', 'ra', 'dec']
-        data_types = ['S25', np.float16, np.float16, np.float32, np.float32]
-        self.good_candidates = np.array(good_candidates, dtype = zip(columns, data_types))
         
 
     def getstars(self, candidatesfile = config.datapath+'candidates_good.txt'):
@@ -118,6 +84,9 @@ class Analysis(object):
             self.stars.append(candidate['starid'])
             self.vmag.append(candidate['vmag'])
             self.bv.append(candidate['bv'])
+            
+        # restart from 20140721A-0002-0014#1504 ?
+            
         print '... %d stars found' % len(self.candidates)
     
     def setperiod(self, starid, period):
@@ -144,6 +113,14 @@ class Analysis(object):
         query = """UPDATE ngc6633 SET good = False WHERE starid='%s';""" % starid
         self.wifsip.execute(query) 
         
+    def isbad(self, starid):
+        query = """SELECT good FROM ngc6633 WHERE starid='%s';""" % starid
+        result = self.wifsip.query(query)
+        if result[0][0] is None or result[0][0] is True:
+            return False
+        else:
+            return True
+        
     #def __setattr__(self, name, value):
     #    params = {'starid': self.starid, 'name': name, 'value': str(value)}
     #    
@@ -161,20 +138,27 @@ class Analysis(object):
         plot the lightcurve for a given star
         """
         mean = np.mean(self.mag)
+        std = np.std(self.mag)
         t = self.hjd - min(self.hjd)
         plt.axhline(mean,linestyle='--')
+        plt.axhline(mean+2.0*std,linestyle=':')
+        plt.axhline(mean-2.0*std,linestyle=':')
+        
         plt.xlim(min(t),max(t))
+        
         plt.ylabel('mag')
-        plt.grid()
+        
+        plt.minorticks_on()
         plt.errorbar(t, self.mag, yerr=self.err, fmt='.k',
                      capsize=None, capthick=0.0, elinewidth=0.0)
         ylim=plt.ylim()
         plt.ylim(ylim[1],ylim[0])
 
-    def plot_clean(self, periods, amplitudes, bv, clean_period, clean_error):
+    def plot_clean(self, periods, amplitudes, residuals, bv, clean_period, clean_error):
         mean_amps = np.mean(amplitudes)
         # we plot normalized by sigmas
         plt.plot(periods, amplitudes/mean_amps, 'k')
+        plt.plot(periods, residuals/mean_amps, 'b')
         
         plt.axvspan(self._p01(bv), self._p34(bv), alpha=0.2)
         plt.axvline(self._p11(bv), ls='-.')
@@ -185,15 +169,26 @@ class Analysis(object):
         
         plt.axhline(self.sigma_limit, color='k', ls='--')
         plt.xlim(self.minperiod, self.maxperiod)
-        plt.ylabel('$\sigma$')
+        plt.ylabel('clean $\sigma$')
         plt.minorticks_on()
         
-    def plot_lombscargle(self, periods, powers, ls_period, ls_error):
+    def plot_lombscargle(self, periods, powers, window, bv, ls_period, ls_error):
         mean_pwrs = np.mean(powers)
-        plt.plot(periods, powers/mean_pwrs, 'grey')
+        plt.plot(periods, powers/mean_pwrs, 'k')
+        plt.plot(periods, window/np.mean(window), 'b')
+
+        plt.axvspan(self._p01(bv), self._p34(bv), alpha=0.2)
+        plt.axvline(self._p11(bv), ls='-.')
+
         plt.axvline(x = ls_period, color='blue', alpha=0.5)
         plt.axvline(x = ls_period+ls_error, color='blue', alpha=0.5, ls=':')
         plt.axvline(x = ls_period-ls_error, color='blue', alpha=0.5, ls=':')
+
+        plt.axhline(self.sigma_limit, color='k', ls='--')
+        plt.xlim(self.minperiod, self.maxperiod)
+        plt.ylabel('lomb $\sigma$')
+        plt.minorticks_on()
+
     
     def plot_pdm(self, periods, thetas, bv, pdm_period, pdm_error):
         plt.plot(periods, thetas, 'k')
@@ -255,37 +250,30 @@ class Analysis(object):
         if len(lc)<50:
             logger.warn("%s: not enough datapoints" % starid)
             print 'not enough datapoints'
-            return                    
+            return  
+        
+        if self.isbad(starid):
+            logger.info("%s: already marked bad" % starid)
+            print 'already marked bad'
+            return  
+                          
         #lc.rebin(0.1)
         #lc.normalize()
         #lc.clip(0.1)
-        #lc.detrend()
-        #lc.sigma_clip()
-        #lc.detrend()
+        lc.detrend()
+        lc.sigma_clip(2.0)
+        # since sigma clipping might change the trend of the lightcurve, we are detrending again 
+        lc.detrend()
         #lc.normalize()
         
         self.hjd = lc.hjd
         self.mag = lc.mag
         self.err = lc.err
         
-        clean_periods, clean_amplitudes = lc.clean(self.minperiod, self.maxperiod, gain=0.1)
-        ls_frequencies, ls_powers = lc.lomb_scargle(minfrequency=1./self.maxperiod, maxfrequency=1./self.minperiod)
+        clean_periods, clean_amplitudes, clean_residuals = lc.clean(self.minperiod, self.maxperiod, gain=0.1)
+        ls_periods, ls_powers, ls_window = lc.lomb_scargle(minfrequency=1./self.maxperiod, maxfrequency=1./self.minperiod)
         pdm_periods, pdm_thetas = lc.pdm(self.minperiod, self.maxperiod)
        
-        ls_periods = 1./ls_frequencies[ls_frequencies>0][::-1]
-        ls_powers = ls_powers[ls_frequencies>0][::-1]
-        
-        #base_periods = np.arange(self.minperiod, self.maxperiod, 0.01)
-        #clean_interpolate = interpolate.interp1d(clean_periods, clean_amplitudes**2)
-        #ls_interpolate = interpolate.interp1d(ls_periods, ls_powers)
-        #pdm_interpolate = interpolate.interp1d(pdm_periods, 1.0 - pdm_thetas)
-        
-        # use interpolation function returned by `interp1d`
-        #sum_amp = clean_interpolate(base_periods)*ls_interpolate(base_periods)*pdm_interpolate(base_periods) 
-          
-        #sum_amp /= np.max(sum_amp) 
-        #i = np.argmax(sum_amp)
-        
         def issimilar(value1, error1, value2, error2):
             if error1<0.0 or error2<0.0:
                 raise(ValueError,"error values must be positive")
@@ -348,44 +336,47 @@ class Analysis(object):
         
         clean_sigmas = lc.clean_amplitude/mean_amp
         
-        try:
-            if clean_sigmas > self.sigma_limit and lc.pdm_theta < self.theta_limit:
-                print "clean: %.2f+-%.2f\tls: %.2f+-%.2f\tpdm: %.3f+-%.3f" % (lc.clean_period, 
-                                                                     lc.clean_error, 
-                                                                     lc.ls_period,
-                                                                     lc.ls_error,
-                                                                     lc.pdm_period,
-                                                                     lc.pdm_error
-                                                                     )
-                self.setperiod(starid, period)
-            else:
-                print '%.1f < %.1f sigmas or theta %.2f > %.2f' % (clean_sigmas, self.sigma_limit, lc.pdm_theta, self.theta_limit)
-                self.setperiod(starid, np.nan)
-                return
-        except ValueError:
-            print 'No maximum clean amplitude for starid %s' % starid
-            logger.error("No maximum clean amplitude for starid %s" % starid)
-            return           
+        if (issimilar(lc.clean_period, lc.clean_error, lc.pdm_period, lc.pdm_error) or \
+             issimilar(lc.ls_period, lc.ls_error, lc.pdm_period, lc.pdm_error)):
+            logstring = "clean: %.2f+-%.2f\tls: %.2f+-%.2f\tpdm: %.3f+-%.3f" % (lc.clean_period, 
+                                                                 lc.clean_error, 
+                                                                 lc.ls_period,
+                                                                 lc.ls_error,
+                                                                 lc.pdm_period,
+                                                                 lc.pdm_error
+                                                                 )
+            print logstring
+            logger.info(logstring)
+            self.setperiod(starid, period)
+        else:
+            logstring = '%.1f < %.1f sigmas or theta %.2f > %.2f' % (clean_sigmas, self.sigma_limit, lc.pdm_theta, self.theta_limit)
+            print logstring
+            logger.info(logstring)
+            
+            self.setperiod(starid, np.nan)
+            return
             
         #make the plots    
         star = {'tab':0, 'bv':bv}
         
-        plt.subplot(411) ##################################################
+        plt.subplot(511) ##################################################
         plt.title('%s (%d) V = %.2f B-V=%.2f S/N = %.1f' % (starid, star['tab'], vmag, bv,snr))
         self.plot_lightcurve()
         
-        plt.subplot(412) ##################################################
-        self.plot_clean(clean_periods, clean_amplitudes, bv, 
+        plt.subplot(512) ##################################################
+        self.plot_clean(clean_periods, clean_amplitudes, clean_residuals, bv, 
                         lc.clean_period, lc.clean_error)
-        self.plot_lombscargle(ls_periods, ls_powers,
+        
+        plt.subplot(513) ##################################################
+        self.plot_lombscargle(ls_periods, ls_powers, ls_window, bv,
                               lc.ls_period, lc.ls_error)
 
-        plt.subplot(413) ##################################################
+        plt.subplot(514) ##################################################
         plt.axvline(period, color='b')
         self.plot_pdm(pdm_periods, pdm_thetas, bv,
                       lc.pdm_period,lc.pdm_error)
         
-        plt.subplot(414) ##################################################
+        plt.subplot(515) ##################################################
         self.plot_phase(period)
         
         plt.savefig(config.plotpath+'%s(%d).pdf' % (starid,star['tab']))
@@ -393,31 +384,14 @@ class Analysis(object):
 
     def analysis(self):
         """
-        perform various pariod and frequency analysis on each star with a 
+        perform various period and frequency analysis on each star with a 
         lightcurve
         """
-        from matplotlib import rcParams
-        
         print 'Analysis'
 
-        fig_width = 18.3/2.54  # width in inches, was 7.48in
-        fig_height = 23.3/2.54  # height in inches, was 25.5
-        fig_size =  [fig_width,fig_height]
+        
         #set plot attributes
-        params = {'backend': 'Agg',
-          'axes.labelsize': 12,
-          'axes.titlesize': 12,
-          'font.size': 12,
-          'xtick.labelsize': 12,
-          'ytick.labelsize': 12,
-          'figure.figsize': fig_size,
-          'savefig.dpi' : 300,
-          'font.family': 'sans-serif',
-          'axes.linewidth' : 0.5,
-          'xtick.major.size' : 2,
-          'ytick.major.size' : 2,
-          }
-        rcParams.update(params)
+        plt.style.use('a4paper.mplstyle')
         
         for starid,vmag,bv in zip(self.stars, self.vmag, self.bv):
             self._analyzestar(starid, vmag, bv)
