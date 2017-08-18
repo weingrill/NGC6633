@@ -1,0 +1,31 @@
+# -*- coding: utf-8 -*-
+        
+backend : 			Agg
+axes.labelsize : 	12
+axes.titlesize : 	12
+font.size :			8
+xtick.labelsize : 	10
+ytick.labelsize : 	10
+figure.figsize : 	7.48, 11.33
+savefig.dpi : 		300
+savefig.format : 	pdf    														# png, ps, pdf, svg
+font.family: 		sans-serif
+axes.linewidth : 	0.5
+xtick.major.size : 	2
+ytick.major.size : 	2
+
+legend.fontsize : 	6
+legend.numpoints :	1
+legend.scatterpoints : 1
+
+#grid False by default, but this affects the grid if turned on
+grid.color : 		k		   													
+grid.linestyle : 	-       													
+grid.linewidth : 	0.2     													
+grid.alpha : 		0.5     													
+
+savefig.facecolor : none
+savefig.edgecolor : none
+
+
+#pdf.fonttype : 42         # Output Type 3 (Type3) or Type 42 (TrueType)
