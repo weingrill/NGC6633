@@ -321,7 +321,7 @@ class NGC6633Plots(object):
         ax.set_aspect(1.)
         ax.scatter(astars['ra'],astars['dec'], marker='*', s=(12.-vmag)*15,facecolor='gray', edgecolor='none')
         #ax.scatter(pstars['ra'],pstars['dec'], marker='o',edgecolor='r', facecolor='none', s=10)
-        ax.scatter(gstars['ra'],gstars['dec'], marker='o',edgecolor='r', facecolor='r', s=10)
+        ax.scatter(gstars['ra'],gstars['dec'], marker='o',edgecolor='r', facecolor='r', s=6)
         
         cra, cdec = (276.88, 6.57) # center of NGC 6633
         d2 = 0.5*1320.2/3600.0 # half WiFSIP FOV
@@ -336,18 +336,42 @@ class NGC6633Plots(object):
             
             ras = [ra-d2, ra+d2, ra+d2, ra-d2, ra-d2]
             das = [dec-d2, dec-d2, dec+d2, dec+d2, dec-d2]
-            ax.plot(ras, das ,'g')
+            ax.plot(ras, das ,'g', linewidth = 0.5)
+
+        jeffriesFOV = [(277.1469592634424,    6.835556888173003),
+                       (276.97805116210407,    6.834855747171522),    
+                       (276.97907270772845,    6.7564510548203875),    
+                       (276.5949879886856,    6.756398474346955),    
+                       (276.59410200060904,    6.457219331798672),    
+                       (276.53272724459043,    6.458216177780244),    
+                       (276.5328789026882,    6.220938850884848),    
+                       (276.7657856811511,    6.221028548852213),    
+                       (276.7668125536561,    6.295307265427873),    
+                       (276.9165627413882,    6.297374125505645),    
+                       (276.9165717039262,    6.369590106179307),    
+                       (277.0663442135021,    6.372645499872204),    
+                       (277.06646967873314,    6.669762766189294),    
+                       (277.14556237727106,    6.670754304722979),    
+                       (277.1469592634424,    6.835556888173003)]
+
+        ras = []
+        decs = []
+        for jeffries in jeffriesFOV:
+            ra, dec = jeffries
+            ras.append(ra)
+            decs.append(dec) 
+        ax.plot(ras, decs, 'b--', linewidth = 0.5)
 
         #xticks = ax.get_xticks()
-        print [ast.dd2hms(r) for r in ras]
+        #print [ast.dd2hms(r) for r in ras]
         xticks = [ast.hms2dd((18,m,0)) for m in [30,29,28,27,26,15]]
-        xlabels = ['$8^h%2d^m$' % m for m in [30,29,28,27,26,15]]
+        xlabels = ['$18^h%2d^m$' % m for m in [30,29,28,27,26,15]]
         plt.xticks(xticks, xlabels)
-        declist = [(6,0),(6,15),(6,30),(6,45),(7,0)]
+        declist = [(6,10),(6,20),(6,30),(6,40),(6,50)]
         yticks = [ast.dms2dd(dl) for dl in declist]
         ylabels = ['$%d^{\circ}%2d^m$' % dl for dl in declist]
         plt.yticks(yticks, ylabels, rotation=90)
-        ax.grid()
+        #ax.grid()
         ax.set_ylim(cdec-0.4,cdec+0.4)
         ax.set_xlim(cra+0.4,cra-0.4)
         plt.xlabel('R.A. (J2000)')
